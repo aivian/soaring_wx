@@ -1,0 +1,203 @@
+#!/usr/bin/env python
+import rospy
+import scipy.io as sio
+import numpy as np
+# import the map class
+from soaring_maps.map_classes import LiftMap
+# import messages
+from wave_mapping_msgs.msg import Waypoint
+from wave_mapping_msgs.msg import SoaringMap
+from wave_mapping_msgs.msg import AircraftState
+from wave_mapping_msgs.msg import RingSettingInfo
+from wave_mapping_msgs.msg import LiftMapInfo
+from sensor_msgs.msg import Image
+# import os to get relative path name
+import os
+
+class LiftFinder():
+    def __init__( self, pub ):
+        # load precomputed map data
+        dir_name =  os.path.dirname(__file__)
+        map_file = os.path.join(dir_name, '../../soaring_parameters/map.mat')
+        matlab_map_data = sio.loadmat( map_file )
+        # initialize map
+        self.map = LiftMap( matlab_map_data )
+        # save the publisher
+        self.waypoint_publisher = pub
+        # keep track of the current destination of the AC
+        self.current_destination = [0.0]*2
+        # intitialize current destination as the center of the map
+        self.current_destination[0] = self.map.lat_center
+        self.current_destination[1] = self.map.lon_center
+        # keep track of the current location of the AC
+        self.current_location = [0.0]*2
+        # publish the initial destination
+        self.publish_destination()
+        # speed ring setting
+        self.lift_threshold = 1.0
+        self.threshold_multiplier = 0.75
+        # save time of last map update..
+        self.last_update = rospy.Time.now()
+    
+    def set_search_bounds( self, filename ):
+        # call the set_geofence method of the map
+        self.map.import_geofence( filename )
+        
+    # CALLBACKS
+    def set_lift_threshold( self, data ):
+        # set the minimum lift we're looking for ( a function of MacCready ring setting the aircraft polar and a nominal thermaling bank angle)
+        self.lift_threshold = self.threshold_multiplier * ( data.threshold )
+    
+    def variance_update( self, data ):
+        # do a measurement update of the map
+        self.map.set_variance( data.data )
+    
+    def mean_update( self, data ):
+        # do a measurement update of the map
+        self.map.set_mean( data.data )
+        
+    def set_current_destination( self, data ):
+        # simple method intended to be a callback setting the aircraft's destination
+        if ( data.number == 101 ):
+            # set the new destination, waypoint 101 has been dragged by the user
+            self.current_destination[0] = data.wp_lla.x
+            self.current_destination[1] = data.wp_lla.y
+    
+    def set_current_location( self, data ):
+        # method intended to be a message callback to the aircraft state
+        self.current_location[0] = data.ac_lla.x
+        self.current_location[1] = data.ac_lla.y
+    
+    # PUBLISHERS
+    def update_best_lift( self, pub ):
+        # set the threshold in the map (eventually in a callback)
+        self.map.set_threshold( self.lift_threshold )
+        # find the best lift location
+        best_lift_loc = self.map.find_best_lift( self.current_location[0], self.current_location[1] )
+        # if it's a new one, and it represents something real, save an publish!        
+        if ( not(np.array_equal( self.current_destination, best_lift_loc)) and (self.map.num_features > 0) ):
+            self.current_destination = best_lift_loc
+            # publish the new waypoint
+            self.publish_destination()
+        # publish the number of thermals available
+        self.publish_lift_information( pub )
+        # save time of last map update..
+        self.last_update = rospy.Time.now()
+    
+    def publish_lift_information( self, pub ):
+        # method will publish the number of lift sources detected, their locations, and their strengths
+        msg = LiftMapInfo()
+        msg.num_features = self.map.num_features
+        msg.feature_mean = self.map.feature_mean.tolist()
+        msg.feature_lat = self.map.feature_loc[:,0].tolist()
+        msg.feature_lon = self.map.feature_loc[:,1].tolist()
+        msg.threshold = self.lift_threshold
+        msg.header.stamp = rospy.Time.now()
+        pub.publish( msg )
+    
+    def publish_destination( self ):
+        # method for publishing the destination waypoint
+        msg = Waypoint()
+        msg.number = 101 #number of the moving exporation waypoint
+        msg.next_number = 102 # next waypoint number (energy waypoint, we won't reach it though)
+        msg.wp_lla.x = self.current_destination[0]
+        msg.wp_lla.y = self.current_destination[1]
+        msg.wp_lla.z = 520.0 # altitude, nominal- this needs to be valid, eg. above ground
+        msg.radius_orbit = 50.0  # future: radius from which we should orbit
+        msg.time_orbit = 120  # future: time in seconds to be spent on station
+        msg.header.stamp = rospy.Time.now()
+        rospy.loginfo("NEW WP PUBLISHED")
+        # publish!
+        self.waypoint_publisher.publish( msg )
+        
+    def _map_msg_header( self ):
+        # method for filling out most of the fields of the map message
+        msg = SoaringMap()
+        #
+        msg.info.map_load_time = self.last_update
+        msg.info.resolution = self.map.resolution
+        msg.info.width = self.map.lon_n
+        msg.info.height = self.map.lat_n
+        # this will be a little different than the ROS implementation..
+        msg.info.origin.position.x = 0 # longitiude of the center of the map
+        msg.info.origin.position.y = 0 # latitude of the center of the map
+        msg.header.stamp = rospy.Time.now()
+        # return a mostly filled out message
+        return msg
+        
+    def publish_lift( self, pub ):
+        msg = self._map_msg_header()
+        msg.data = self.map.output_lift_flat()
+        # publish!
+        pub.publish( msg )
+    
+    def _map_img_header( self ):
+        # method for filling out the first few fields of the sensor_msgs/Image.msg, surprisingly, this works
+        msg = Image()
+        msg.height = self.map.lat_n
+        msg.width = self.map.lon_n
+        msg.encoding = "mono8" #8-bit encoding, a boring picture bust as informative as necessary
+        msg.is_bigendian = True #?
+        msg.step = 1*self.map.lon_n #8-bit encoding
+        return msg
+    
+    def publish_processed_image( self, pub ):
+        # method for publishing the uncertainty map as a sensor_msgs/Image.msg
+        msg = self._map_img_header()
+        # the data is the map scaled such that 255 is P=1,, 0 is P=0
+        msg.data = self.map.output_probability_img()
+        # publish!
+        pub.publish( msg )
+
+def main():
+    # start the node
+    rospy.init_node('lift_map_node')
+    # map time-update and publish rate
+    rate = 0.5 #(Hz)
+    r = rospy.Rate(rate)
+    # waypoint publisher
+    pub = rospy.Publisher( '/command_waypoint', Waypoint )
+    # image publisher for visualization
+    pub_processed_image = rospy.Publisher( '/lift_img', Image )
+    # environment state publisher
+    pub_environment_state = rospy.Publisher( '/lift_info', LiftMapInfo )
+    # lift map publisher
+    pub_lift = rospy.Publisher('/lift_map', SoaringMap)
+    # sleep to ensure publisher has been registered
+    rospy.sleep(0.5)
+    # initialize the map
+    m = LiftFinder( pub )
+    # uncertainty map subscriber, register with the appropriate map input
+    rospy.Subscriber('/variance_map', SoaringMap, m.variance_update )
+    rospy.Subscriber('/energy_map', SoaringMap, m.mean_update )
+    # subscriber to monitor the aircraft's current location
+    rospy.Subscriber('/aircraft_state', AircraftState, m.set_current_location )
+    # subscriber to monitor the aircraft's commanded destination (honor dragged waypoint)
+    rospy.Subscriber('/current_waypoint', Waypoint, m.set_current_destination )
+    # subscriber to monitor ring setting    
+    rospy.Subscriber( '/ring_state', RingSettingInfo, m.set_lift_threshold )
+    # sleep to ensure that the subscribers have been registered
+    rospy.sleep(0.5)
+    
+    # will probably want to import this from a KML file eventually
+    #posts = [[40.80988038861543,-77.66097048497572],[40.80814280731306,-77.66095578230937],[40.80948287814884,-77.65596697694599],[40.81065561835016,-77.65507643298786],[40.81307714765035,-77.65504462256237]]
+    dir_name =  os.path.dirname(__file__)
+    fence_file = os.path.join(dir_name, '../../soaring_parameters/map_fence.kml')     
+    m.set_search_bounds( fence_file )
+    
+    # note that everything in this node happens inside of the callbacks for now!
+    # run
+    while (not rospy.is_shutdown()):
+        # update best lift location
+        m.update_best_lift( pub_environment_state )
+        # publish uncertainty map as an image for visualization
+        m.publish_processed_image( pub_processed_image )
+        # publish lift map
+        m.publish_lift( pub_lift )
+        # zzz
+        r.sleep()
+
+if __name__ == '__main__':
+    try:
+        main()
+    except rospy.ROSInterruptException: pass

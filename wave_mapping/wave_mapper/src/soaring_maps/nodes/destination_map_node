@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+import rospy
+import scipy.io as sio
+import numpy as np
+import datetime
+# import the map class
+from soaring_maps.map_classes import DestinationMap
+from soaring_maps.map_classes import InsolationMap
+from soaring_maps.map_classes import WindMap
+# import messages
+from wave_mapping_msgs.msg import Waypoint
+from wave_mapping_msgs.msg import SoaringMap
+from wave_mapping_msgs.msg import AircraftState
+from wave_mapping_msgs.msg import GPSTime
+from wave_mapping_msgs.msg import WindState
+from sensor_msgs.msg import Image
+# import os to get relative path name
+import os
+
+class DestinationSelect():
+    def __init__( self, pub ):
+        # load precomputed map data
+        dir_name =  os.path.dirname(__file__)
+        map_file = os.path.join(dir_name, '../../soaring_parameters/map.mat')
+        matlab_map_data = sio.loadmat( map_file )
+        # initialize map
+        self.map = DestinationMap( matlab_map_data )
+        self.im = InsolationMap( matlab_map_data )
+        self.wm = WindMap( matlab_map_data )
+        self.dt = datetime.datetime(2014,9,23,13,0,0) # initialize datetime as something..
+        # save time of last map update..
+        self.last_update = rospy.Time.now()
+        # save the publisher
+        self.waypoint_publisher = pub
+        # keep track of the current destination of the AC
+        self.current_destination = [0.0]*2
+        # intitialize current destination as the center of the map
+        self.current_destination[0] = self.map.lat_center
+        self.current_destination[1] = self.map.lon_center
+        # keep track of the current location of the AC
+        self.current_location = [0.0]*2
+        self.current_heading = 0.0
+        # set local search range
+        self.range_local = 400.0
+        # set waypoint proximity threshold
+        self.proximity = 50.0
+        # publish the initial destination
+        self.publish_destination()
+        self.last_distance = 0.0
+    
+    def set_search_bounds( self, filename ):
+        # call the set_geofence method of the map
+        self.map.import_geofence( filename )
+        # set out of bounds cells to invalid now that we have a fence 
+        self.map.set_invalid_cells()
+    
+    def uncertainty_update( self, data ):
+        # do a measurement update of the map
+        self.map.input_uncertainty( data.data )
+        # save time of last map update..
+        self.last_update = rospy.Time.now()
+        
+    def insolation_update( self ):
+        # called on a timer using the current datetime        
+        self.im.set_time( self.dt )
+        # pass to exploration priority map
+        self.map.input_insolation( self.im.output_priority_flat() )
+        
+    def set_current_wind( self, data ):
+        # callback to set the current wind strength and direction from wind_state     
+        # set wind in wind map
+        self.wm.set_wind( [data.wind_south, data.wind_west] )
+        # pass to exploration priority map
+        self.map.input_wind( self.wm.output_priority_flat() )
+        
+    def set_current_time( self, data ):
+        # callback method for gps_time message
+        # lets reset the datetime object every other minute:
+        if (( data.minutes % 2 ) == 0):
+            seconds = int( np.floor( data.seconds ) )
+            micros = int( np.round( ( data.seconds % 1.0 )*1e6 ) )
+            self.dt = datetime.datetime(data.year,data.month,data.day,data.hours,data.minutes,seconds,micros)
+        
+    def set_current_destination( self, data ):
+        # simple method intended to be a callback setting the aircraft's destination
+        if ( data.number == 100 ):
+            # set the new destination, waypoint 100 has been dragged by the user
+            self.current_destination[0] = data.wp_lla.x
+            self.current_destination[1] = data.wp_lla.y
+    
+    def set_current_location( self, data ):
+        # method intended to be a message callback to the aircraft state
+        self.current_location[0] = data.ac_lla.x
+        self.current_location[1] = data.ac_lla.y
+        self.current_heading = data.euler.z
+        # find the distance to the listed destination
+        distance = self._distance_to_destination()
+        # if distance is small, assign new destination and publish
+        if ( (distance < self.proximity) or self._is_moving_away(distance) ):
+            # select new destination
+            self._local_search()
+            # publish once
+            self.publish_destination()
+            # save the initial distance to the new destination
+            self.last_distance = self._distance_to_destination()
+        # save this distance
+        self.last_distance = distance
+            
+    def _is_moving_away( self, distance ):
+        # method that returns true if we're close to the destination but are mvoing away from it
+        return (((distance - self.last_distance) > 0.0) and (distance < 2.0*self.map.resolution))
+
+    def _local_search( self ):
+        # compute a new destination for the AC
+        self.current_destination = self.map.find_local_priority( self.current_location[0], self.current_location[1], self.current_heading, self.wm.wind_speed, self.wm.wind_direction, self.range_local )
+    
+    def _distance_to_destination( self ):
+        # method for finding distance between current lat/lon and destination lat/lon
+        # lets use the Haversine formula for a little extra precision:
+        delta_lat = self.current_destination[0] - self.current_location[0]
+        delta_lon = self.current_destination[1] - self.current_location[1]
+        R = 6371000.0
+        a = np.sin(delta_lat/2.0)*np.sin(delta_lat/2.0) + np.cos(self.current_location[0])*np.cos(self.current_destination[0])*np.sin(delta_lon/2.0)*np.sin(delta_lon/2.0)
+        c = 2.0*np.arctan2( np.sqrt(a), np.sqrt(1-a) )
+        return R*c
+
+    def publish_destination( self ):
+        # method for publishing the destination waypoint
+        msg = Waypoint()
+        msg.number = 100 #number of the moving exporation waypoint
+        msg.next_number = 101 # next waypoint number (energy waypoint, we won't reach it though)
+        msg.wp_lla.x = self.current_destination[0]
+        msg.wp_lla.y = self.current_destination[1]
+        msg.wp_lla.z = 495 # altitude, nominal- this needs to be valid, eg. above ground
+        msg.radius_orbit = 0.0  # future: radius from which we should orbit
+        msg.time_orbit = 0  # future: time in seconds to be spent on station
+        msg.header.stamp = rospy.Time.now()
+        rospy.loginfo("NEW WP PUBLISHED")
+        # publish!
+        self.waypoint_publisher.publish( msg )
+        
+    def _map_msg_header( self ):
+        # method for filling out most of the fields of the map message
+        msg = SoaringMap()
+        #
+        msg.info.map_load_time = self.last_update
+        msg.info.resolution = self.map.resolution
+        msg.info.width = self.map.lon_n
+        msg.info.height = self.map.lat_n
+        # this will be a little different than the ROS implementation..
+        msg.info.origin.position.x = 0 # longitiude of the center of the map
+        msg.info.origin.position.y = 0 # latitude of the center of the map
+        msg.header.stamp = rospy.Time.now()
+        # return a mostly filled out message
+        return msg
+        
+    def publish_priority( self, pub ):
+        msg = self._map_msg_header()
+        msg.data = self.map.output_priority_flat()
+        # publish!
+        pub.publish( msg )
+
+    def _map_img_header( self ):
+        # method for filling out the first few fields of the sensor_msgs/Image.msg, surprisingly, this works
+        msg = Image()
+        msg.height = self.map.lat_n
+        msg.width = self.map.lon_n
+        msg.encoding = "mono8" #8-bit encoding, a boring picture bust as informative as necessary
+        msg.is_bigendian = True #?
+        msg.step = 1*self.map.lon_n #8-bit encoding
+        return msg
+
+    def publish_exploration_image( self, pub ):
+        # method for publishing the uncertainty map as a sensor_msgs/Image.msg
+        msg = self._map_img_header()
+        # the data is the map scaled such that 255 is high confidence, 0 is no confidence
+        msg.data = self.map.output_exploration_img()
+        # publish!
+        pub.publish( msg )
+
+def main():
+    global m
+    # start the node
+    rospy.init_node('destination_map_node')
+    # map time-update and publish rate
+    rate = 0.25 #(Hz)
+    r = rospy.Rate(rate)
+    # waypoint publisher
+    pub = rospy.Publisher( '/command_waypoint', Waypoint )
+    # priority map publisher
+    pub_priority = rospy.Publisher('/priority_map', SoaringMap, queue_size = 1 )
+    # image publisher for visualization
+    pub_exploration_image = rospy.Publisher('/exploration_img', Image, queue_size = 1 )
+    # sleep to ensure publisher has been registered
+    rospy.sleep(0.5)
+    # initialize the map
+    m = DestinationSelect( pub )
+    # uncertainty map subscriber, register with the appropriate map input
+    rospy.Subscriber('/uncertainty_map', SoaringMap, m.uncertainty_update, queue_size = 1 )
+    # subscriber to monitor the aircraft's current location
+    rospy.Subscriber('/aircraft_state', AircraftState, m.set_current_location, queue_size = 1 )
+    # subscriber to monitor the aircraft's commanded destination (honor dragged waypoint)
+    rospy.Subscriber('/current_waypoint', Waypoint, m.set_current_destination )
+    # subscriber to monitor the current gps time
+    rospy.Subscriber('/gps_time', GPSTime, m.set_current_time, queue_size = 1 )
+    # subscriber to monitor the current wind state
+    rospy.Subscriber('/wind_state', WindState, m.set_current_wind, queue_size = 1 )
+    # sleep to ensure that the subscribers have been registered
+    rospy.sleep(0.5)
+    # call the insolation update once, then occasionally update the insolation map (the sun moves slowly)
+    m.insolation_update()
+    rospy.Timer(rospy.Duration(120.0), insolation_update_event, oneshot=False); 
+    
+    # will probably want to import this from a KML file eventually
+    #posts = [[40.80988038861543,-77.66097048497572],[40.80814280731306,-77.66095578230937],[40.80948287814884,-77.65596697694599],[40.81065561835016,-77.65507643298786],[40.81307714765035,-77.65504462256237]]
+    dir_name =  os.path.dirname(__file__)
+    fence_file = os.path.join(dir_name, '../../soaring_parameters/map_fence.kml')    
+    m.set_search_bounds( fence_file )
+    
+    # note that everything in this node happens inside of the callbacks for now!
+    # run
+    while (not rospy.is_shutdown()):
+        # publish uncertainty map as an image for visualization
+        m.publish_exploration_image( pub_exploration_image )
+        # publish priority map 
+        m.publish_priority( pub_priority )
+        # zzz
+        r.sleep()
+        
+def insolation_update_event(event):
+    global m
+    # we'll call this on a timer for now rather than in a message callback
+    m.insolation_update()
+
+if __name__ == '__main__':
+    try:
+        main()
+    except rospy.ROSInterruptException: pass

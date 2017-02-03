@@ -1,0 +1,70 @@
+#!/usr/bin/env python
+
+import rospy
+import sys
+import serial as serial
+from struct import *
+
+# import protocol
+from communications import AVIa_tcp
+from communications import socket_connections
+
+# import messages to be subscribed to and published
+from wave_mapping_msgs.msg import AircraftState
+
+# import serial packets
+from wave_mapping_packets import AircraftStatePacket
+
+def connect_to_client():
+    client_socket = socket_connections.pysock(
+        '',
+        5005,
+        1024)
+    client_socket.start_recv()
+    return client_socket
+    
+def parse_state(pkt, pubber, timestamp):
+	state_pkt = AircraftStatePacket.AircraftStatePacket(pkt)
+	state_msg = AircraftState()
+	
+	state_msg.ac_lla.x = state_pkt.ac_lla()[0]
+	state_msg.ac_lla.y = state_pkt.ac_lla()[1]
+	state_msg.ac_lla.z = state_pkt.ac_lla()[2]
+	state_msg.v_gps.x = state_pkt.v_gps()[0]
+	state_msg.v_gps.y = state_pkt.v_gps()[1]
+	state_msg.v_gps.z = state_pkt.v_gps()[2]
+	state_msg.euler.x = state_pkt.euler()[0]
+	state_msg.euler.y = state_pkt.euler()[1]
+	state_msg.euler.z = state_pkt.euler()[2]
+	state_msg.v_ias = state_pkt.v_ias()
+	
+	state_msg.header.stamp = timestamp
+	
+	pubber.publish(state_msg)
+
+def server_receive():
+    rospy.init_node('server_receive')
+    r = rospy.Rate(100)
+    pub_state = rospy.Publisher('/aircraft_state', AircraftState, queue_size=10)
+
+    gcs = connect_to_client()
+    parser_avia = AVIa_tcp.AVIaTCPParser(gcs)
+
+    while (not rospy.is_shutdown()):
+        new_packets = parser_avia.read_buffer()
+        if new_packets is None:
+            gcs = connect_to_client()
+            parser_avia = AVIa_tcp.AVIaTCPParser(gcs)
+        if new_packets:
+            for recv_packet in parser_avia.packet_buffer:
+                if (recv_packet.pktType() == 0x10):
+                    # telemetry
+                    parse_state( recv_packet, pub_state,
+                        rospy.Time.now())
+                parser_avia.packet_buffer = []
+        r.sleep()
+
+if __name__ == '__main__':
+    try:
+        server_receive()
+    except rospy.ROSInterruptException: pass

@@ -1,0 +1,45 @@
+#!/usr/bin/env python
+import rospy
+import numpy as np
+# import messages
+from wave_mapping_msgs.msg import AircraftState
+from wave_mapping_msgs.msg import EnergyState
+from wave_mapping_msgs.msg import SplineModel
+# import the spline stuff
+from geometry.bSpline import TensorProductSpline
+# import our thermal map
+from wind_modeling.models import ThermalBSplineModel
+# import required stuff to read parameters file
+import xml.etree.ElementTree as et
+import os
+import copy
+               
+def main():
+    # starts the node
+    rospy.init_node('lift_modeling_node')
+    # set rate to 20 hz, and other timing related stuff
+    rate = 20.0
+    r  = rospy.Rate(rate)
+    rospy.sleep(1.0)
+    # make a model
+    dir_name =  os.path.dirname(__file__)
+    param_file = os.path.join(dir_name, 
+        '../../soaring_parameters/mission_parameters.xml')
+    # publisher for the model
+    pub_model = rospy.Publisher('/spline_model',
+        SplineModel, queue_size=1)
+    therm_model = ThermalBSplineModel(param_file, rate, pub_model)
+    # energy state subscriber, register the model's measurement update
+    rospy.Subscriber('/energy_state', EnergyState, 
+        therm_model.measurement_update, queue_size=1)
+    rospy.sleep(1.0)
+    
+    while (not rospy.is_shutdown()):
+        therm_model.time_update()
+        r.sleep()
+        
+# main node fcn
+if __name__ == '__main__':
+    try:
+        main()
+    except rospy.ROSInterruptException: pass

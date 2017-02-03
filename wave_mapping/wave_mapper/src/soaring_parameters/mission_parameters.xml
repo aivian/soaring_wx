@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<data>
+    <aircraft>
+        <polar_a>-0.0172</polar_a>
+        <polar_b>0.3966</polar_b>
+        <polar_c>-2.8427</polar_c>
+        <Va_min_polar>10.0</Va_min_polar>
+        <Va_max_polar>25.0</Va_max_polar>
+        <ref_mass>5.70</ref_mass>
+        <wing_area>0.971</wing_area>
+        <CL_0>0.38</CL_0>
+        <CL_max>1.05</CL_max>
+        <CL_dflap>0.0</CL_dflap>
+    </aircraft>
+    <mission>
+        <mass>6.54</mass>
+        <phi_max>0.785</phi_max>
+        <Va_min>13.0</Va_min>
+        <Va_max>25.0</Va_max>
+        <alt_clearance_limit>45.0</alt_clearance_limit>
+        <alt_clearance>60.0</alt_clearance>
+        <alt_min_limit>545.0</alt_min_limit>
+        <alt_min>560.0</alt_min>
+        <alt_floor>600.0</alt_floor>
+        <alt_max>710.0</alt_max>
+        <alt_max_limit>745.0</alt_max_limit>
+        <lat_safe>0.649228641746949</lat_safe>
+        <lon_safe>-1.406376760427513</lon_safe>
+        <alt_safe>600.0</alt_safe>
+    </mission>
+</data>

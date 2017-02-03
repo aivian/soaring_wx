@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+
+import rospy
+import sys
+import errno
+import serial as serial
+import socket
+from struct import *
+
+# import protocol
+from communications import AVIa_tcp
+from communications import socket_connections
+
+# import data terminal connection
+from flight_data_server.message_callbacks import DataTerminalConnection
+
+# import messages to be subscribed to and published
+from wave_mapping_msgs.msg import AircraftState
+from wave_mapping_msgs.msg import SplineModel
+
+# import avia packets
+from wave_mapping_packets.AircraftStatePacket import AircraftStatePacket
+from wave_mapping_packets.SplineModelPacket import SplineModelPacket
+    
+def server_send():
+    rospy.init_node('server_send')    
+    r = rospy.Rate(25)
+    
+    clnt = DataTerminalConnection()
+    sub_state = rospy.Subscriber('/aircraft_state', AircraftState,
+        clnt.state_sender, queue_size = 2)
+    sub_spline = rospy.Subscriber('/spline_model', SplineModel,
+        clnt.spline_sender, queue_size = 1)
+    clnt.prepare_connection()
+    
+    while (not rospy.is_shutdown()):
+        try:
+            clnt.wait_for_client()
+            clnt.connected = True
+        except socket.error, e:
+            rospy.loginfo(e)
+        while (not rospy.is_shutdown() and clnt.connected):
+            try:
+                r.sleep()                    
+            except socket.error, e:
+                clnt.connected = False
+                rospy.loginfo('disconnected client')
+
+if __name__ == '__main__':
+    try:
+        server_send()
+    except rospy.ROSInterruptException: pass

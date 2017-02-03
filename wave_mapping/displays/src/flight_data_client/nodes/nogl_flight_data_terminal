@@ -1,0 +1,161 @@
+#!/usr/bin/python
+
+"""
+prototype data terminal for the perlan project 
+
+author: John Bird
+"""
+
+import sys
+from PyQt4 import QtGui, QtCore
+import time
+import copy
+
+import rospy
+import rospkg
+import scipy.io as sio
+
+#from pyqtgraph.Qt import QtGui, QtCore
+import pyqtgraph as pg
+import numpy as np
+from pyqtgraph.dockarea import *
+
+# import protocol
+from communications.AVIa_tcp import AVIaTCPParser as AVIaParser
+from communications.socket_connections import pysock
+
+# import serial packets
+from communications.AVIa_packet import AVIaPacket
+from wave_mapping_packets.AircraftStatePacket import AircraftStatePacket
+from wave_mapping_packets.SplineModelPacket import SplineModelPacket
+
+# import widgets
+from graphics import plot_widgets
+from graphics.image_view_no_hist import ImageView
+from graphics.attitude_indicator import AttitudeIndicator
+
+# more stuff
+from geometry.quaternion import Quaternion
+from geometry.bSpline import TensorProductSpline
+
+# map things
+from soaring_maps.energy_map import EnergyMap
+from soaring_maps.lift_map import LiftMap
+
+# things I've filed away in the src folder of this package for manageability
+from flight_data_client.connection_manager import SocketServicer
+from flight_data_client.map_manager import SplineImgManager, MapManager
+            
+class DataTerminal(QtGui.QWidget):
+    """ A class for the Qt Application
+    """
+    
+    def __init__(self):
+        """ Constructor
+        
+        runs the super-class constructor for QtWidgets and then
+        initializes the UI and backbone comms
+        """
+        super(DataTerminal, self).__init__()
+        self.init_comms()
+        self.init_maps()
+        self.init_UI()
+        
+    def init_comms(self):
+        """ set up communications
+        """
+        self.data_server = SocketServicer()
+        
+    def init_maps(self):
+        self.map_dt = 0.1
+        self.energy_map = MapManager(0.1)
+        self.spline_map = SplineImgManager()
+        
+    def init_UI(self):
+        """ set up the windows, plots, and whatnont
+        """
+        self._win = QtGui.QMainWindow()
+        self._area = DockArea()
+        self._win.setCentralWidget(self._area)
+        self._win.resize(1000,600)
+        self._win.setWindowTitle('lift mapping data display')
+
+        ## Create docks, place them into the window
+        self._d_model = Dock("Lift Model", size=(500,300))
+        self._d_map = Dock("Lift Map", size=(500,300))
+        self._d_wind = Dock("Wind", size=(500,300))
+        self._d_att = Dock("Attitude", size=(500,300))
+        self._area.addDock(self._d_model, 'left')
+        self._area.addDock(self._d_map, 'right')
+        self._area.addDock(self._d_wind, 'bottom', self._d_model)
+        self._area.addDock(self._d_att, 'bottom', self._d_map)
+        
+        ## configure the docks
+        # dock 1 is a gl widget for the spline map
+        # we'll also set up our class to manage updating it.
+        self._win_1 = ImageView()
+        self._win_1.setImage(np.zeros((50,50)))
+        spl_img = self._win_1.getImageItem()
+        self._img_disp_spline = plot_widgets.ImageDisplay(is_colorize=True)
+        self._img_disp_spline._img_view = spl_img
+        self.spline_map.register_visualization(self._img_disp_spline)
+        self._img_disp_spline.cmax = 4.0
+        self._img_disp_spline.cmin = -4.0
+        self._d_model.addWidget(self._win_1)
+        
+        # dock 2 is an imageview for the lift map
+        # also set up a class to manage updating it
+        self._win_2 = ImageView()
+        self._win_2.setImage(np.zeros((50,50)))
+        img = self._win_2.getImageItem()
+        self.energy_map.img_viewer = img
+        self._d_map.addWidget(self._win_2)
+        
+        # dock 3 is a plot for the wind
+        self._win_3 = pg.PlotWidget()
+        plt = self._win_3
+        self.sc_wind = plot_widgets.StripChart(plt, 3)
+        self._d_wind.addWidget(self._win_3)
+
+        # dock 4 is a an attitude indicator
+        self._win_4 = AttitudeIndicator()
+        self._d_att.addWidget(self._win_4)
+        
+        time.sleep(1)
+        
+        # connect the visualizers and maps to some new data signals
+        self.data_server.newWind.connect(self.sc_wind.update_data)
+        self.data_server.newWind.connect(
+            self.energy_map.measurement_update)
+        self.data_server.newSpline.connect(self.spline_map.update_data)
+        self.data_server.newEuler.connect(
+            self.update_euler_data)
+            
+        # set up a qt time to service the comms at 100Hz
+        self.service_timer = QtCore.QTimer()
+        self.service_timer.timeout.connect(
+            self.data_server.service_comms)
+        self.service_timer.start(10)
+        
+        # set up a qt timer to service the map time updates
+        self.map_timer = QtCore.QTimer()
+        self.map_timer.timeout.connect(self.energy_map.time_update)
+        self.map_timer.start(1000*self.map_dt)
+        
+        self._win.show()
+        
+    def update_euler_data(self, t, euler):
+        self._win_4.theta = euler[1]
+        self._win_4.phi = euler[0]
+        self._win_4.repaint()
+        
+def main():
+    rospy.init_node('flight_data_terminal')
+    app = QtGui.QApplication(sys.argv)
+    dt = DataTerminal()
+    sys.exit(app.exec_())
+
+
+if __name__ == '__main__':
+    main()
+

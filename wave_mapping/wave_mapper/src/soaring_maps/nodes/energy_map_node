@@ -1,0 +1,134 @@
+#!/usr/bin/env python
+import rospy
+import scipy.io as sio
+# import the map class
+from soaring_maps.map_classes import EnergyMap
+# import messages
+from wave_mapping_msgs.msg import EnergyState
+from wave_mapping_msgs.msg import SoaringMap
+from sensor_msgs.msg import Image
+# import os to get relative path name
+import os
+
+class SoaringEnergyMap():
+    def __init__(self, dt):
+        # load precomputed map data
+        dir_name =  os.path.dirname(__file__)
+        map_file = os.path.join(dir_name, '../../soaring_parameters/map.mat')
+        matlab_map_data = sio.loadmat(map_file)
+        # initialize map
+        self.map = EnergyMap(dt, matlab_map_data)
+        # save time of last map update..
+        self.last_update = rospy.Time.now()
+    
+    def time_update(self):
+        # simple method calls the time update of the energy map object
+        self.map.time_update()
+    
+    def measurement_update(self, data):
+        # check the energy message to see if the motor is on, if so, don't do the measuremnt update
+        if (data.is_valid):
+            # do a measurement update of the map
+            self.map.measurement_update(data.meas_lla.x, data.meas_lla.y, (data.ed-data.ed_polar))
+            # save time of last map update..
+            self.last_update = rospy.Time.now()
+    
+    def publish_uncertainty(self, pub):
+        msg = self._map_msg_header()
+        msg.data = self.map.output_uncertainty_flat()
+        # publish!
+        pub.publish(msg)
+    
+    def publish_variance(self, pub):
+        msg = self._map_msg_header()
+        msg.data = self.map.output_variance_flat()
+        # publish!
+        pub.publish(msg)
+    
+    def publish_energy(self, pub):
+        msg = self._map_msg_header()
+        msg.data = self.map.output_energy_flat()
+        # publish!
+        pub.publish(msg)
+    
+    def publish_uncertainty_image(self, pub):
+        # method for publishing the uncertainty map as a sensor_msgs/Image.msg
+        msg = self._map_img_header()
+        # the data is the map scaled such that 255 is high confidence, 0 is no confidence
+        msg.data = self.map.output_uncertainty_img()
+        # publish!
+        pub.publish(msg)
+    
+    def publish_energy_image(self, pub):
+        # method for publishing the energy map as a sensor_msgs/Image.msg
+        msg = self._map_img_header()
+        # the data is the energy map scaled such that 255 is positive energy, 0 is negative energy
+        msg.data = self.map.output_energy_img()
+        # publish!
+        pub.publish(msg)
+    
+    def _map_msg_header(self):
+        # method for filling out most of the fields of the map message
+        msg = SoaringMap()
+        #
+        msg.info.map_load_time = self.last_update
+        msg.info.resolution = self.map.resolution
+        msg.info.width = self.map.lon_n
+        msg.info.height = self.map.lat_n
+        # this will be a little different than the ROS implementation..
+        msg.info.origin.position.x = 0 # longitiude of the center of the map
+        msg.info.origin.position.y = 0 # latitude of the center of the map
+        msg.header.stamp = rospy.Time.now()
+        # return a mostly filled out message
+        return msg
+
+    def _map_img_header(self):
+        # method for filling out the first few fields of the sensor_msgs/Image.msg, surprisingly, this works
+        msg = Image()
+        msg.height = self.map.lat_n
+        msg.width = self.map.lon_n
+        msg.encoding = "mono8" #8-bit encoding, a boring picture bust as informative as necessary
+        msg.is_bigendian = True #?
+        msg.step = 1*self.map.lon_n #8-bit encoding
+        return msg
+
+def main():
+    # start the node
+    rospy.init_node('energy_map_node')
+    # map time-update and publish rate
+    rate = 1.0 #(Hz)
+    r = rospy.Rate(rate)
+    # map publisher
+    pub_uncertainty = rospy.Publisher('/uncertainty_map', SoaringMap)
+    pub_variance = rospy.Publisher('/variance_map', SoaringMap)
+    pub_energy = rospy.Publisher('/energy_map', SoaringMap)
+    # image publishers for visualization
+    pub_uncertainty_image = rospy.Publisher('/uncertainty_img', Image)
+    pub_energy_image = rospy.Publisher('/energy_img', Image)
+    rospy.sleep(1.0)
+    # initialize the map
+    m = SoaringEnergyMap((1.0/rate))
+    # energy state subscriber, register the map's measurement update
+    rospy.Subscriber('/energy_state', EnergyState, m.measurement_update )
+    rospy.sleep(1.0)
+
+    # run
+    while (not rospy.is_shutdown()):
+        # do the time update on the map
+        m.time_update()
+        # publish the uncertainty map (machine readable)
+        m.publish_uncertainty(pub_uncertainty)
+        # publish the variance map (machine readable)
+        m.publish_variance(pub_variance)
+        # publish the energy map (machine readable)
+        m.publish_energy(pub_energy)
+        # publish images for human visualization of the maps
+        m.publish_energy_image(pub_energy_image)
+        m.publish_uncertainty_image(pub_uncertainty_image)
+        # zzzz
+        r.sleep()
+
+if __name__ == '__main__':
+    try:
+        main()
+    except rospy.ROSInterruptException: pass
