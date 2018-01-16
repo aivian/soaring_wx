@@ -17,10 +17,10 @@ import parse_soundings
 #sounding_getter = parsers.gsd.GSDParser()
 sounding_getter = parsers.bufrgruven.BufrGruvenParser()
 
-year = 2018
-month = 01
-day = 18
-hour = 17
+year = 2013
+month = 11
+day = 19
+hour = 19
 
 #sounding = sounding_getter.from_RUC_soundings(
 #    station='kunv',
@@ -31,9 +31,11 @@ hour = 17
 #    hour=01,
 #    model='Op40')
 
-datestamp = '{}{}{}'.format(year, month, day)
-soundings = sounding_getter.parse_ascii(
-    '/opt/bufrgruven/metdat/ascii/2018011500_nam.prof.unv'.format(datestamp))
+datestamp = '{}{:02d}{:02d}'.format(year, month, day)
+data_file = '/opt/bufrgruven/metdat/ascii/{}00_nam.prof.abe'.format(
+    datestamp)
+print('loading: {}'.format(data_file))
+soundings = sounding_getter.parse_ascii(data_file)
 
 t_desired = datetime.datetime(year, month, day, hour, 0, 0, 0)
 gps_t_desired = geodesy.conversions.datetime_to_gps(t_desired)
