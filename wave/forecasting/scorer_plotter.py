@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import pdb
 import os
+import sys
 import numpy
 import scipy
 import datetime
@@ -13,10 +14,15 @@ import geodesy.conversions
 import parsers.gsd
 import parsers.bufrgruven
 import meteorology.sounding
+import parsers.soundings
 
 import parse_soundings
 
-gsd = False
+if len(sys.argv) > 1:
+    sounding_source = 'bufkit'
+    bufkit_file = sys.argv[1]
+else:
+    sounding_source = 'bufrgruven'
 
 ruc_sounding_getter = parsers.gsd.GSDParser()
 sounding_getter = parsers.bufrgruven.BufrGruvenParser()
@@ -31,7 +37,7 @@ load_stamp = {
 plot_stamp = {
     'year': 2018,
     'month': 11,
-    'day': 07,
+    'day': 9,
     'hour': 17,
     }
 
@@ -40,7 +46,7 @@ plot_lim = (0, 8000)
 datestamp = '{}{:02d}{:02d}'.format(
     load_stamp['year'], load_stamp['month'], load_stamp['day'])
 
-if not gsd:
+if sounding_source == 'bufrgruven':
     data_file = '/opt/bufrgruven/metdat/ascii/{}{:02d}_nam.prof.{}'.format(
         datestamp, load_stamp['cycle'], load_stamp['station'])
 
@@ -66,7 +72,7 @@ if not gsd:
             best_idx = idx
             delta_min = delta
     sounding = soundings[best_idx]
-else:
+elif sounding_source == 'gsd':
     sounding = ruc_sounding_getter.from_RUC_soundings(
         station='k{}'.format(load_stamp['station']),
     #    #lat=34.7,
@@ -75,6 +81,23 @@ else:
         day=plot_stamp['day'],
         hour=plot_stamp['hour'],
         model='Op40')
+elif sounding_source == 'bufkit':
+    soundings = parsers.soundings.sounding_from_bufkit(bufkit_file)
+    t_desired = datetime.datetime(
+        plot_stamp['year'],
+        plot_stamp['month'],
+        plot_stamp['day'],
+        plot_stamp['hour'],
+        0, 0, 0)
+    gps_t_desired = geodesy.conversions.datetime_to_gps(t_desired)
+    best_idx = 0
+    delta_min = numpy.inf
+    for idx, sounding in enumerate(soundings):
+        delta = numpy.abs(sounding.time - gps_t_desired)
+        if delta < delta_min:
+            best_idx = idx
+            delta_min = delta
+    sounding = soundings[best_idx]
 
 g = 9.806
 
