@@ -23,23 +23,25 @@ sounding_getter = parsers.bufrgruven.BufrGruvenParser()
 
 load_stamp = {
     'year': 2018,
-    'month': 2,
-    'day': 05,
+    'month': 11,
+    'day': 06,
     'station': 'msv',
-    'cycle': 12
+    'cycle': 12,
 }
 plot_stamp = {
     'year': 2018,
-    'month': 2,
-    'day': 05,
-    'hour': 15,
+    'month': 11,
+    'day': 07,
+    'hour': 17,
     }
+
+plot_lim = (0, 8000)
 
 datestamp = '{}{:02d}{:02d}'.format(
     load_stamp['year'], load_stamp['month'], load_stamp['day'])
 
 if not gsd:
-    data_file = '/opt/bufrgruven/metdat/ascii/{}{}_nam.prof.{}'.format(
+    data_file = '/opt/bufrgruven/metdat/ascii/{}{:02d}_nam.prof.{}'.format(
         datestamp, load_stamp['cycle'], load_stamp['station'])
 
     if not os.path.isfile(data_file):
@@ -89,6 +91,7 @@ dUdz = wind_gradient.dot(base_direction)
 dU2dz2 = numpy.gradient(dUdz, z)
 
 theta = sounding.theta(z=z)[0]
+dthetadz = sounding.theta_gradient(z)[0]
 
 l = numpy.sqrt(
     numpy.power(N/U, 2.0) - dU2dz2 / U)
@@ -98,7 +101,7 @@ l = numpy.sqrt(
 plt.figure()
 plt.scatter(l, z)
 plt.grid()
-plt.ylim(0, 10000.0)
+plt.ylim(plot_lim[0], plot_lim[1])
 plt.xlim(0.0, 0.002)
 plt.xlabel('scorer parameter (1/m)')
 plt.ylabel('altitude (m)')
@@ -107,38 +110,56 @@ plt.title('Scorer Parameter Profile')
 #roughly figured from google earth, edge of plateau to top of bald eagle
 lambda_ridge = 7.5e3
 
-plt.figure()
-plt.plot(2 * numpy.pi / l, z)
+f_lambda = plt.figure(figsize=(3,4))
+plt.plot(2 * numpy.pi / l / 1000.0, z, linewidth=2)
 #plt.plot([lambda_ridge, lambda_ridge], [z[0], z[-1]], 'k')
+plt.xlim(0, 30.0)
 plt.grid()
-plt.ylim(0, 10000.0)
-plt.xlabel('wavelength (m)')
+plt.ylim(plot_lim[0], plot_lim[1])
+plt.xlabel('wavelength (km)')
 plt.ylabel('altitude (m)')
 plt.title('Wavelength Profile')
+plt.tight_layout()
 
 plt.figure()
-plt.plot(U, z)
+plt.plot(dthetadz * 1000.0, z)
 plt.grid()
-plt.ylim(0, 10000.0)
+plt.ylim(plot_lim[0], plot_lim[1])
+plt.xlabel('lapse rate (K/km)')
+plt.ylabel('altitude (m)')
+plt.title('Lapse Rate Profile')
+
+f_wind = plt.figure(figsize=(5,5))
+plt.plot(U, z, '-r', label='magnitude', linewidth=2)
+plt.plot(wind[:,0], z, '--g', label='u', linewidth=2)
+plt.plot(wind[:,1], z, '--b', label='v', linewidth=2)
+#plt.legend()
+plt.grid()
+plt.ylim(plot_lim[0], plot_lim[1])
 plt.xlabel('wind magnitude (m/s)')
 plt.ylabel('altitude (m)')
 plt.title('Wind Profile')
+plt.tight_layout()
 
 plt.figure()
 plt.scatter(N, z)
 plt.grid()
-plt.ylim(0, 10000.0)
+plt.ylim(plot_lim[0], plot_lim[1])
 plt.xlabel('B-V frequency (1/s)')
 plt.ylabel('altitude (m)')
 plt.title('Brunt-Vaisala Frequency Profile')
 
-plt.figure()
-plt.plot(theta, z)
+f_theta = plt.figure(figsize=(4,5))
+plt.plot(theta, z, linewidth=2)
 plt.grid()
-plt.ylim(0, 10000.0)
+plt.ylim(plot_lim[0], plot_lim[1])
 plt.xlim(260, 360)
-plt.xlabel('theta (K)')
+plt.xlabel(r'$\theta$ (K)')
 plt.ylabel('altitude (m)')
 plt.title('Potential Temperature Profile')
+plt.tight_layout()
 
+f_lambda.savefig('lambda.png', format='png', dpi=300)
+f_theta.savefig('theta.png', format='png', dpi=300)
+f_wind.savefig('wind.png', format='png', dpi=300)
 plt.show()
